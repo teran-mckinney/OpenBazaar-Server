@@ -467,6 +467,7 @@ class Server(object):
 
         def get_response(response):
             if not response[0]:
+                ciphertext = box.encrypt(p.SerializeToString().encode("zlib"), nonce)
                 self.kserver.set(digest(receiving_node.id), pkephem, ciphertext)
 
         self.log.info("sending encrypted message to %s" % receiving_node.id.encode("hex"))
@@ -490,7 +491,7 @@ class Server(object):
                         try:
                             box = Box(PrivateKey(self.signing_key.encode()), PublicKey(value.valueKey))
                             ciphertext = value.serializedData
-                            plaintext = box.decrypt(ciphertext)
+                            plaintext = box.decrypt(ciphertext).decode("zlib")
                             p = objects.Plaintext_Message()
                             p.ParseFromString(plaintext)
                             signature = p.signature
@@ -511,8 +512,7 @@ class Server(object):
                                                  self.protocol.multiplexer.blockchain,
                                                  receipt_json=p.message)
                             else:
-                                listener.notify(p.sender_guid, p.encryption_pubkey, p.subject,
-                                                objects.Plaintext_Message.Type.Name(p.type), p.message)
+                                listener.notify(p, signature)
                         except Exception:
                             pass
                         signature = self.signing_key.sign(value.valueKey)[:64]
@@ -632,6 +632,62 @@ class Server(object):
                 return parse_response([False])
         self.log.info("sending order receipt to %s" % guid)
         return self.kserver.resolve(unhexlify(guid)).addCallback(get_node)
+
+    def open_dispute(self, order_id, claim):
+        """
+        Given and order ID we will pull the contract from disk and send it along with the claim
+        to both the moderator and other party to the dispute. If either party isn't online we will stick
+        it in the DHT for them.
+        """
+        try:
+            file_path = DATA_FOLDER + "purchases/in progress" + order_id + ".json"
+            with open(file_path, 'r') as filename:
+                contract = json.load(filename, object_pairs_hook=OrderedDict)
+                guid = contract["vendor_offer"]["listing"]["id"]["guid"]
+                enc_key = contract["vendor_offer"]["listing"]["id"]["pubkeys"]["encryption"]
+        except Exception:
+            try:
+                file_path = DATA_FOLDER + "sales/in progress/" + order_id + ".json"
+                with open(file_path, 'r') as filename:
+                    contract = json.load(filename, object_pairs_hook=OrderedDict)
+                    guid = contract["buyer_order"]["order"]["id"]["guid"]
+                    enc_key = contract["buyer_order"]["order"]["id"]["pubkeys"]["encryption"]
+            except Exception:
+                return False
+        contract_dict = contract
+        if "vendor_order_confirmation" in contract_dict:
+            del contract_dict["vendor_order_confirmation"]
+        order_id = digest(json.dumps(contract_dict, indent=4)).encode("hex")
+        contract["dispute_claim"] = claim
+        mod_guid = contract["buyer_order"]["order"]["moderator"]
+        for mod in contract["vendor_offer"]["listing"]["moderators"]:
+            if mod["guid"] == mod_guid:
+                mod_enc_key = mod["pubkeys"]["encryption"]["key"]
+
+        def get_node(node_to_ask, recipient_guid, public_key):
+            def parse_response(response):
+                if not response[0]:
+                    self.send_message(Node(unhexlify(recipient_guid)),
+                                      public_key,
+                                      objects.Plaintext_Message.Type.Value("DISPUTE"),
+                                      contract,
+                                      order_id,
+                                      store_only=True)
+
+            if node_to_ask:
+                skephem = PrivateKey.generate()
+                pkephem = skephem.public_key.encode(nacl.encoding.RawEncoder)
+                box = Box(skephem, PublicKey(public_key, nacl.encoding.HexEncoder))
+                nonce = nacl.utils.random(Box.NONCE_SIZE)
+                ciphertext = box.encrypt(json.dumps(contract, indent=4), nonce)
+                d = self.protocol.callDisputeOpen(node_to_ask, pkephem, ciphertext)
+                return d.addCallback(parse_response)
+            else:
+                return parse_response([False])
+
+        self.kserver.resolve(unhexlify(guid)).addCallback(get_node, guid, enc_key)
+        self.kserver.resolve(unhexlify(mod_guid)).addCallback(get_node, mod_guid, mod_enc_key)
+
 
     @staticmethod
     def cache(filename):
