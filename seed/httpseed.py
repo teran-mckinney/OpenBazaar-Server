@@ -29,7 +29,6 @@ from market import network
 from keyutils.keys import KeyChain
 from db.datastore import Database
 from constants import DATA_FOLDER
-from market.profile import Profile
 from log import Logger, FileLogObserver
 
 
@@ -69,7 +68,7 @@ def run(*args):
     port = response[2]
 
     # Start the kademlia server
-    this_node = Node(keychain.guid, ip_address, port, keychain.guid_signed_pubkey, vendor=Profile(db).get().vendor)
+    this_node = Node(keychain.guid, ip_address, port, keychain.guid_signed_pubkey, vendor=False)
     protocol = OpenBazaarProtocol((ip_address, port), response[0], testnet=TESTNET)
 
     try:
