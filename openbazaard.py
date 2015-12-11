@@ -19,7 +19,7 @@ from dht.network import Server
 from dht.node import Node
 from net.wireprotocol import OpenBazaarProtocol
 from constants import DATA_FOLDER, KSIZE, ALPHA, LIBBITCOIN_SERVER,\
-    LIBBITCOIN_SERVER_TESTNET, SSL_KEY, SSL_CERT, SEED
+    LIBBITCOIN_SERVER_TESTNET, SSL_KEY, SSL_CERT, SEED, SEED_NODE, SEED_NODE_TESTNET
 from market import network
 from market.listeners import MessageListenerImpl, BroadcastListenerImpl, NotificationListenerImpl
 from api.ws import WSFactory, WSProtocol
@@ -59,17 +59,16 @@ def run(*args):
             pass
 
     logger.info("%s on %s:%s" % (response[0], response[1], response[2]))
+    nat_type = response[0]
     ip_address = response[1]
     port = response[2]
 
     # TODO: use TURN if symmetric NAT
 
     def on_bootstrap_complete(resp):
-        logger.info("bootstrap complete, downloading outstanding messages...")
+        logger.info("bootstrap complete")
         mserver.get_messages(mlistener)
         task.LoopingCall(check_unfunded_for_payment, db, libbitcoin_client, nlistener, TESTNET).start(600)
-
-        # TODO: ping seed node to establish connection if not full cone NAT
 
     protocol = OpenBazaarProtocol((ip_address, port), response[0], testnet=TESTNET)
 
@@ -87,6 +86,9 @@ def run(*args):
         kserver.bootstrap(kserver.querySeed(SEED)).addCallback(on_bootstrap_complete)
     kserver.saveStateRegularly(DATA_FOLDER + 'cache.pickle', 10)
     protocol.register_processor(kserver.protocol)
+
+    if nat_type != "Full Cone":
+        kserver.protocol.ping(SEED_NODE_TESTNET if TESTNET else SEED_NODE)
 
     # market
     mserver = network.Server(kserver, keys.signing_key, db)
@@ -233,6 +235,7 @@ commands:
                 description="Shutdown the server and disconnect",
                 usage='''usage:
         python openbazaard.py stop''')
+            parser.parse_args(sys.argv[2:])
             print "OpenBazaar server stopping..."
             try:
                 requests.get("http://localhost:18469/api/v1/shutdown")
@@ -245,6 +248,7 @@ commands:
                 description="Restart the server",
                 usage='''usage:
         python openbazaard.py restart''')
+            parser.parse_args(sys.argv[2:])
             print "Restarting OpenBazaar server..."
             self.daemon.restart()
 
